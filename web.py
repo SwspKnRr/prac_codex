@@ -296,7 +296,8 @@ def add_technical_features(df, period="6mo", interval="1d"):
     std20 = df['Close'].rolling(window=20).std()
     df['upper_band'] = df['ma20'] + (std20 * 2)
     df['lower_band'] = df['ma20'] - (std20 * 2)
-    df['bb_position'] = (df['Close'] - df['lower_band']) / (df['upper_band'] - df['lower_band'])
+    bb_denom = (df['upper_band'] - df['lower_band'])
+    df['bb_position'] = np.where(bb_denom != 0, (df['Close'] - df['lower_band']) / bb_denom, np.nan)
 
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -305,7 +306,8 @@ def add_technical_features(df, period="6mo", interval="1d"):
     df['rsi_feat'] = 100 - (100 / (1 + rs))
 
     df['vol_change'] = df['Volume'].pct_change()
-    df['vol_spike'] = df['Volume'] / df['Volume'].rolling(20, min_periods=5).mean()
+    avg_vol = df['Volume'].rolling(20, min_periods=5).mean()
+    df['vol_spike'] = np.where(avg_vol != 0, df['Volume'] / avg_vol, np.nan)
     df['return_1d'] = df['Close'].pct_change()
     df['return_2d'] = df['Close'].pct_change(2)
     df['gap'] = df['Open'] / df['Close'].shift(1) - 1
@@ -330,8 +332,12 @@ def add_technical_features(df, period="6mo", interval="1d"):
         df['spy_ret'] = np.nan
 
     # 필수 피처만 NaN 제거, 시장 피처는 누락돼도 학습 가능하도록 둔다
+    df = df.replace([np.inf, -np.inf], np.nan)
     required_cols = ['ma5', 'ma20', 'ma60', 'disparity_20', 'bb_position', 'rsi_feat', 'vol_change', 'vol_spike', 'return_1d', 'return_2d', 'gap', 'range']
     df = df.dropna(subset=required_cols)
+    for col in ['vix', 'vix_ret', 'spy_ret']:
+        if col in df.columns:
+            df[col] = df[col].fillna(0)
     return df
 
 def train_prediction_model(df, period="6mo", interval="1d", horizon=5, neutral_band=0.01, min_rows=60):
