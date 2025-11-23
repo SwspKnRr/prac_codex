@@ -12,13 +12,6 @@ import numpy as np
 # 1. 페이지 설정 및 초기화
 # ---------------------------------------------------------
 st.set_page_config(page_title="codex 실험용 앱", layout="wide")
-# 그룹볼 폰트 설정 (굴림)
-st.markdown("""
-<style>
-* { font-family: 'Gulim', '굴림', sans-serif !important; }
-.stPlotlyChart text { font-family: 'Gulim', '굴림', sans-serif !important; }
-</style>
-""", unsafe_allow_html=True)
 
 if 'search_ticker' not in st.session_state:
     st.session_state['search_ticker'] = 'TQQQ'
