@@ -689,42 +689,42 @@ with col_main:
         with tab3:
             intr_interval = '1m' if sel_interval in ['1m', '5m'] else '5m'
             intr_period = '5d' if intr_interval == '1m' else '1mo'
-            st.caption(f"{intr_interval} ??? ?? ??? ?? (?????: {intr_period})")
+            st.caption(f"{intr_interval} 데이터 기반 초단기 신호 (타임프레임: {intr_period})")
             try:
                 short_df = stock.history(period=intr_period, interval=intr_interval)
             except Exception:
                 short_df = pd.DataFrame()
 
             if short_df.empty or len(short_df) < 20:
-                st.warning("?? ??? ??? ???? ?????.")
+                st.warning("단타 신호를 계산할 데이터가 부족합니다.")
             else:
                 sig = compute_short_term_signal(short_df)
                 if not sig:
-                    st.warning("?? ??? ??????.")
+                    st.warning("신호 계산에 실패했습니다.")
                 else:
                     prob = sig['prob_up'] * 100
                     tgt_px = sig['price'] * (1 + sig['target_pct'] / 100)
                     stop_px = sig['price'] * (1 - sig['stop_pct'] / 100)
                     c1, c2, c3 = st.columns(3)
-                    c1.metric("?? ??", f"{prob:.1f}%", delta=">60%??? ?? ??")
-                    c2.metric("??/??", f"+{sig['target_pct']:.2f}% / -{sig['stop_pct']:.2f}%", delta=f"${tgt_px:.2f} / ${stop_px:.2f}")
-                    c3.metric("?? ???", f"{(sig['vol_30'] or 0):.2f}%", delta=f"ATR {sig['atr14']:.2f}")
+                    c1.metric("상승 확률", f"{prob:.1f}%", delta=">60%에서만 진입 권장")
+                    c2.metric("타겟/손절", f"+{sig['target_pct']:.2f}% / -{sig['stop_pct']:.2f}%", delta=f"${tgt_px:.2f} / ${stop_px:.2f}")
+                    c3.metric("단기 변동성", f"{(sig['vol_30'] or 0):.2f}%", delta=f"ATR {sig['atr14']:.2f}")
 
-                    st.progress(prob / 100, text="?? ???" if prob >= 50 else "??/?? ??")
+                    st.progress(prob / 100, text="매수 모멘텀" if prob >= 50 else "중립/매도 대기")
                     st.markdown(
-                        f"- ???: ${sig['price']:.2f} | VWAP: {('N/A' if sig['vwap'] is None else f'${sig['vwap']:.2f}')}"
-                        f"\n- ?? ??/??(50??): ${sig['recent_high']:.2f} / ${sig['recent_low']:.2f}"
-                        f"\n- ??? ????: {('N/A' if sig['vol_ratio'] is None else f'{sig['vol_ratio']:.2f}x')}"
+                        f"- 현재가: ${sig['price']:.2f} | VWAP: {('N/A' if sig['vwap'] is None else f'${sig['vwap']:.2f}')}"
+                        f"\n- 최근 고점/저점(50캔들): ${sig['recent_high']:.2f} / ${sig['recent_low']:.2f}"
+                        f"\n- 거래량 스파이크: {('N/A' if sig['vol_ratio'] is None else f'{sig['vol_ratio']:.2f}x')}"
                     )
 
                     feat_rows = [
-                        {"??": "??? 5", "?(%)": None if sig['mom_5'] is None else round(sig['mom_5'], 2)},
-                        {"??": "??? 15", "?(%)": None if sig['mom_15'] is None else round(sig['mom_15'], 2)},
-                        {"??": "??? 30", "?(%)": None if sig['mom_30'] is None else round(sig['mom_30'], 2)},
-                        {"??": "VWAP ??", "?(%)": None if sig['vwap'] is None else round((sig['price'] - sig['vwap']) / sig['vwap'] * 100, 3)},
-                        {"??": "??? ??", "?(%)": None if sig['vol_ratio'] is None else round(sig['vol_ratio'] * 100 - 100, 1)},
-                        {"??": "ATR(14)", "?(%)": None if sig['atr14'] is None else round(sig['atr14'], 4)},
+                        {"지표": "모멘텀 5", "값(%)": None if sig['mom_5'] is None else round(sig['mom_5'], 2)},
+                        {"지표": "모멘텀 15", "값(%)": None if sig['mom_15'] is None else round(sig['mom_15'], 2)},
+                        {"지표": "모멘텀 30", "값(%)": None if sig['mom_30'] is None else round(sig['mom_30'], 2)},
+                        {"지표": "VWAP 괴리", "값(%)": None if sig['vwap'] is None else round((sig['price'] - sig['vwap']) / sig['vwap'] * 100, 3)},
+                        {"지표": "거래량 배율", "값(%)": None if sig['vol_ratio'] is None else round(sig['vol_ratio'] * 100 - 100, 1)},
+                        {"지표": "ATR(14)", "값(%)": None if sig['atr14'] is None else round(sig['atr14'], 4)},
                     ]
-                    with st.expander("?? ???"):
+                    with st.expander("지표 세부값"):
                         st.dataframe(pd.DataFrame(feat_rows), use_container_width=True)
-                    st.info("?? ??: ?? ??>60% && ????/??? ?? ?? ? ?? ??, ??? -stop% ?? ?? ?? ??? ??.")
+                    st.info("진입 예시: 상승 확률>60% && 스프레드/유동성 조건 만족 시 분할 진입, 손절은 -stop% 또는 직전 저점 아래에 위치.")
