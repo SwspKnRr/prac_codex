@@ -8,6 +8,8 @@ import math
 from datetime import datetime, timedelta
 import io
 import numpy as np
+import json
+import requests
 
 # ---------------------------------------------------------
 # 1. 페이지 설정 및 초기화
@@ -340,6 +342,23 @@ def get_cached_model(ticker, period, interval):
     except Exception as e:
         return None, None, None, None, str(e)
 
+@st.cache_data(ttl=3600)
+def get_fear_greed():
+    try:
+        resp = requests.get("https://production.dataviz.cnn.io/index/fearandgreed/graphdata", timeout=5)
+        if resp.status_code != 200:
+            return None, "CNN 응답 오류"
+        data = resp.json()
+        now_val = data.get("fear_and_greed", {}).get("score")
+        now_rating = data.get("fear_and_greed", {}).get("rating")
+        prev_val = data.get("fear_and_greed_historical", [])[-2].get("score") if len(data.get("fear_and_greed_historical", [])) >= 2 else None
+        delta = None
+        if now_val is not None and prev_val is not None:
+            delta = now_val - prev_val
+        return {"score": now_val, "rating": now_rating, "delta": delta}, None
+    except Exception as e:
+        return None, str(e)
+
 def compute_short_term_signal(df):
     if df is None or df.empty or len(df) < 20:
         return None
@@ -616,10 +635,35 @@ with col_side:
     total_value = total_stock_val + current_cash
     st.metric(label="총 자산 (USD)", value=f"${total_value:,.2f}", delta=f"${daily_pnl_sum:,.2f} (오늘)")
     st.caption(f"📊 주식 ${total_stock_val:,.2f} + 💵 현금 ${current_cash:,.2f}")
+    # VIX
+    try:
+        vix = yf.Ticker("^VIX").history(period="5d")['Close']
+        if len(vix) >= 2:
+            vix_now = vix.iloc[-1]; vix_prev = vix.iloc[-2]
+            vix_delta = vix_now - vix_prev
+            st.metric("VIX(공포지수)", f"{vix_now:.2f}", delta=f"{vix_delta:+.2f}")
+            if vix_now >= 30:
+                st.warning("VIX>30: 변동성 고조, 현금 비중 확대/분할매수만 고려")
+            elif vix_now <= 15:
+                st.info("VIX<15: 변동성 낮음, 과열 여부 확인 후 비중 조절")
+    except Exception:
+        pass
+    # CNN Fear & Greed
+    fg_data, fg_err = get_fear_greed()
+    if fg_data:
+        st.metric("CNN Fear & Greed", f"{fg_data.get('score', '?')}", delta=f"{fg_data.get('delta', 0):+}")
+        st.caption(f"상태: {fg_data.get('rating', 'unknown')}")
+        if fg_data.get("score", 50) < 30:
+            st.warning("공포 구간: 분할매수/현금 확보 병행")
+        elif fg_data.get("score", 50) > 70:
+            st.warning("탐욕 구간: 비중 축소/분할매도 고려")
+    elif fg_err:
+        st.caption("Fear & Greed 지수 불러오기 실패")
     
-    sim_col1, sim_col2 = st.columns([1, 1])
+    sim_col1, sim_col2, sim_col3 = st.columns([1, 1, 1])
     sim_period = sim_col1.selectbox("시뮬레이션 기간", ["6mo", "1y", "2y", "5y"], index=1)
     show_norm = sim_col2.checkbox("정규화(=100 기준)", value=False)
+    bench_ticker = sim_col3.selectbox("벤치마크", ["SPY", "QQQ", "VT", "IWV", "없음"], index=0)
 
     if st.button("📈 자산 추이 (Simulation)", use_container_width=True):
         if not my_stocks.empty:
@@ -640,6 +684,14 @@ with col_side:
                             portfolio_hist += data[t] * row['shares']
                             latest_prices[t] = data[t].iloc[-1]
 
+                    bench_series = None
+                    if bench_ticker != "없음":
+                        try:
+                            bench_data = yf.download(bench_ticker, period=sim_period)['Close']
+                            bench_series = bench_data.dropna()
+                        except Exception:
+                            bench_series = None
+
                     if len(portfolio_hist) == 0:
                         st.warning("계산할 자산 곡선이 없습니다.")
                     else:
@@ -647,17 +699,24 @@ with col_side:
                             base = portfolio_hist.iloc[0] if portfolio_hist.iloc[0] != 0 else 1
                             plot_series = portfolio_hist / base * 100
                             y_label = "지수화(=100)"
+                            if bench_series is not None and len(bench_series) > 0:
+                                bench_base = bench_series.iloc[0] if bench_series.iloc[0] != 0 else 1
+                                bench_plot = bench_series / bench_base * 100
                         else:
                             plot_series = portfolio_hist
                             y_label = "총 자산 (USD)"
+                            if bench_series is not None and len(bench_series) > 0:
+                                bench_plot = bench_series / bench_series.iloc[0] * plot_series.iloc[0]
 
                         roll_max = portfolio_hist.cummax()
                         drawdown = (portfolio_hist / roll_max - 1) * 100
 
                         fig_total = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
                         fig_total.add_trace(go.Scatter(x=plot_series.index, y=plot_series, fill='tozeroy', line=dict(color='#8b5cf6', width=2), name=y_label), row=1, col=1)
+                        if bench_series is not None and len(bench_series) > 0:
+                            fig_total.add_trace(go.Scatter(x=bench_plot.index, y=bench_plot, line=dict(color='#f59e0b', width=2), name=f"{bench_ticker}"), row=1, col=1)
                         fig_total.add_trace(go.Scatter(x=drawdown.index, y=drawdown, fill='tozeroy', line=dict(color='#ef4444'), name='드로우다운(%)'), row=2, col=1)
-                        fig_total.update_layout(margin=dict(t=20, b=10, l=10, r=10), height=480, showlegend=False)
+                        fig_total.update_layout(margin=dict(t=20, b=10, l=10, r=10), height=480, showlegend=True, legend=dict(orientation="h", y=1.08))
                         fig_total.update_yaxes(title_text=y_label, row=1, col=1)
                         fig_total.update_yaxes(title_text="드로우다운(%)", row=2, col=1)
                         st.plotly_chart(fig_total, use_container_width=True)
