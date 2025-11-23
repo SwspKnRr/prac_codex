@@ -8,6 +8,7 @@ import math
 from datetime import datetime, timedelta
 import io
 import numpy as np
+from sklearn.metrics import accuracy_score, roc_auc_score, brier_score_loss
 
 # ---------------------------------------------------------
 # 1. 페이지 설정 및 초기화
@@ -279,7 +280,7 @@ def _clamp(val, lo=-1.0, hi=1.0):
     return max(lo, min(hi, val))
 
 # --- ML Feature Engineering ---
-def add_technical_features(df):
+def add_technical_features(df, period="6mo", interval="1d"):
     df = df.copy()
     # 데이터가 짧을 때는 긴 이평/밴드 계산을 완화
     if len(df) < 60:
@@ -304,32 +305,86 @@ def add_technical_features(df):
     df['rsi_feat'] = 100 - (100 / (1 + rs))
 
     df['vol_change'] = df['Volume'].pct_change()
+    df['vol_spike'] = df['Volume'] / df['Volume'].rolling(20, min_periods=5).mean()
     df['return_1d'] = df['Close'].pct_change()
     df['return_2d'] = df['Close'].pct_change(2)
+    df['gap'] = df['Open'] / df['Close'].shift(1) - 1
+    df['range'] = (df['High'] - df['Low']) / df['Close']
+
+    # 시장 지표 추가 (VIX, SPY 수익률)
+    try:
+        vix = yf.Ticker("^VIX").history(period=period, interval=interval)['Close']
+        if hasattr(vix.index, "tz"): vix = vix.tz_localize(None)
+        vix = vix.reindex(df.index).ffill()
+        df['vix'] = vix
+        df['vix_ret'] = vix.pct_change()
+    except Exception:
+        df['vix'] = np.nan
+        df['vix_ret'] = np.nan
+    try:
+        spy = yf.Ticker("SPY").history(period=period, interval=interval)['Close']
+        if hasattr(spy.index, "tz"): spy = spy.tz_localize(None)
+        spy = spy.reindex(df.index).ffill()
+        df['spy_ret'] = spy.pct_change()
+    except Exception:
+        df['spy_ret'] = np.nan
+
     df = df.dropna()
     return df
 
-def train_prediction_model(df):
+def train_prediction_model(df, period="6mo", interval="1d", horizon=5, neutral_band=0.01):
     try:
         from sklearn.ensemble import RandomForestClassifier
     except ImportError as e:
         return None, None, None, None, "scikit-learn 미설치"
 
-    df_feat = add_technical_features(df)
-    df_feat['Target'] = (df_feat['Close'].shift(-1) > df_feat['Close']).astype(int)
-    if len(df_feat) < 30:
-        return None, None, "데이터가 부족합니다 (30행 이상 필요)"
-    data_for_training = df_feat.iloc[:-1]
-    last_row_features = df_feat.iloc[[-1]]
-    feature_cols = ['disparity_20', 'bb_position', 'rsi_feat', 'vol_change', 'return_1d', 'return_2d']
-    X = data_for_training[feature_cols]
-    y = data_for_training['Target']
+    df_feat = add_technical_features(df, period=period, interval=interval)
+    if len(df_feat) < 200:
+        return None, None, None, None, "데이터가 부족합니다 (200행 이상 필요)"
 
-    model = RandomForestClassifier(n_estimators=120, min_samples_split=8, max_depth=6, random_state=42)
+    future_ret = df_feat['Close'].shift(-horizon) / df_feat['Close'] - 1
+    df_feat['Target'] = np.where(future_ret < -neutral_band, 0, np.where(future_ret > neutral_band, 2, 1))
+    df_feat = df_feat.iloc[:-horizon]  # 마지막 horizon은 레이블 없음
+    last_row_features = add_technical_features(df.tail(200), period=period, interval=interval).iloc[[-1]]
+
+    feature_cols = ['disparity_20', 'bb_position', 'rsi_feat', 'vol_change', 'vol_spike', 'return_1d', 'return_2d', 'gap', 'range', 'vix', 'vix_ret', 'spy_ret']
+    X = df_feat[feature_cols]
+    y = df_feat['Target']
+
+    # 간단한 시계열 expanding split 두 번
+    splits = []
+    n = len(X)
+    cut1 = int(n * 0.6)
+    cut2 = int(n * 0.8)
+    if cut1 > 0 and cut1 < n:
+        splits.append((slice(0, cut1), slice(cut1, cut2)))
+    if cut2 > 0 and cut2 < n:
+        splits.append((slice(0, cut2), slice(cut2, n)))
+
+    model = RandomForestClassifier(n_estimators=150, min_samples_split=8, max_depth=8, random_state=42)
+    metrics = {"val_acc": [], "val_auc": [], "val_brier": []}
+    for tr, va in splits:
+        Xtr, Xva = X.iloc[tr], X.iloc[va]
+        ytr, yva = y.iloc[tr], y.iloc[va]
+        if len(Xva) == 0 or len(np.unique(ytr)) < 2:
+            continue
+        model.fit(Xtr, ytr)
+        proba = model.predict_proba(Xva)
+        pred_up = proba[:, 2]  # 상승 클래스
+        y_up = (yva == 2).astype(int)
+        metrics["val_acc"].append(accuracy_score(yva, model.predict(Xva)))
+        try:
+            metrics["val_auc"].append(roc_auc_score(y_up, pred_up))
+        except Exception:
+            pass
+        metrics["val_brier"].append(brier_score_loss(y_up, pred_up))
+
+    # 최종 학습 전체 데이터
     model.fit(X, y)
-    prob_up = model.predict_proba(last_row_features[feature_cols])[0][1]
+    proba_last = model.predict_proba(last_row_features[feature_cols])[0]
+    prob_up = proba_last[2]
     importances = dict(zip(feature_cols, model.feature_importances_))
-    return prob_up, importances, model, feature_cols, None
+    return prob_up, importances, model, feature_cols, metrics
 
 @st.cache_resource
 def get_cached_model(ticker, period, interval):
@@ -339,6 +394,16 @@ def get_cached_model(ticker, period, interval):
         return prob_up, importances, model, feature_cols, err
     except Exception as e:
         return None, None, None, None, str(e)
+
+def compute_ai_signals(df, period="6mo", interval="1d", horizon=5, neutral_band=0.01):
+    prob_up, importances, model, feature_cols, metrics = train_prediction_model(df, period=period, interval=interval, horizon=horizon, neutral_band=neutral_band)
+    if model is None:
+        return None, None, importances  # importances carries err string if failed
+    df_feat = add_technical_features(df, period=period, interval=interval)
+    df_feat = df_feat.iloc[:-horizon]
+    proba_all = model.predict_proba(df_feat[feature_cols])
+    prob_series = pd.Series(proba_all[:, 2], index=df_feat.index)
+    return prob_series, metrics, importances
 
 def compute_short_term_signal(df):
     if df is None or df.empty or len(df) < 20:
@@ -461,9 +526,9 @@ def get_sp500_short_signals(limit=30, interval="1d", period="1mo"):
 # ---------------------------------------------------------
 # 2. 핵심 로직 (백테스팅)
 # ---------------------------------------------------------
-def run_backtest(df, initial_cash, mode, target_weight, trigger_up, sell_pct, trigger_down, buy_pct, base_mode="TOTAL", use_ai=False, ai_threshold=0.6, ai_period="6mo", ai_interval="1d"):
+def run_backtest(df, initial_cash, mode, target_weight, trigger_up, sell_pct, trigger_down, buy_pct, base_mode="TOTAL", ai_mode="OFF", ai_threshold=0.6, ai_probs=None):
     # base_mode: 매매 비율 산정 기준 (TOTAL: 현금+주식, STOCK: 주식가치)
-    # use_ai: True면 AI 상승확률(ai_threshold 이상)일 때만 매수
+    # ai_mode: OFF / FILTER / ENTRY
     cash = initial_cash
     start_price = df.iloc[0]['Close']
     initial_invest = (initial_cash * (target_weight / 100))
@@ -493,10 +558,19 @@ def run_backtest(df, initial_cash, mode, target_weight, trigger_up, sell_pct, tr
             if price <= last_rebal_price * (1 - trigger_down/100) or (shares == 0 and cash > price):
                 should_buy = True
             # AI 필터 적용
-            if use_ai and should_buy:
-                prob_ai, _, _, _, err = get_cached_model(str(df.name) if hasattr(df, "name") else "", ai_period, ai_interval)
-                if err or prob_ai is None or prob_ai < ai_threshold:
+            if ai_mode in ["FILTER", "ENTRY"] and should_buy:
+                prob_ai = None
+                if ai_probs is not None and len(ai_probs) > 0:
+                    prob_ai = ai_probs.get(date, None)
+                if prob_ai is None:
                     should_buy = False
+                else:
+                    if 0.45 <= prob_ai <= 0.55:
+                        should_buy = False
+                    if prob_ai < ai_threshold:
+                        should_buy = False
+                    if ai_mode == "ENTRY" and not should_buy:
+                        should_buy = False
             if should_buy:
                 base_val = total_val if base_mode == "TOTAL" else stock_val
                 invest_amt = base_val * (buy_pct / 100)
@@ -513,7 +587,7 @@ def run_backtest(df, initial_cash, mode, target_weight, trigger_up, sell_pct, tr
     buy_hold_return = ((df.iloc[-1]['Close'] - df.iloc[0]['Close']) / df.iloc[0]['Close']) * 100
     return df, trade_log, final_return, buy_hold_return
 
-def optimize_params(df, fixed_b, fixed_d, target_w):
+def optimize_params(df, fixed_b, fixed_d, target_w, ai_mode="OFF", ai_threshold=0.6):
     if len(df) < 10: st.toast("❌ 데이터 부족"); return
     best_ret = -9999
     best_params = (st.session_state.get('mode', 'VALUE'), st.session_state.get('up_a', 10.0), st.session_state.get('down_c', 10.0))
@@ -521,12 +595,12 @@ def optimize_params(df, fixed_b, fixed_d, target_w):
     st.toast("🤖 시뮬레이션 중...")
     for a_val in search_ranges:
         for c_val in search_ranges:
-            _, _, ret, _ = run_backtest(df.copy(), 10000, 'VALUE', target_w, a_val, fixed_b, c_val, fixed_d, st.session_state.get('base_mode', 'TOTAL'))
+            _, _, ret, _ = run_backtest(df.copy(), 10000, 'VALUE', target_w, a_val, fixed_b, c_val, fixed_d, st.session_state.get('base_mode', 'TOTAL'), ai_mode=ai_mode, ai_threshold=ai_threshold, ai_probs=None)
             if ret > best_ret: best_ret = ret; best_params = ('VALUE', a_val, c_val)
     st.session_state['mode'] = best_params[0]; st.session_state['up_a'] = best_params[1]; st.session_state['down_c'] = best_params[2]
     st.toast(f"✅ 최적 전략: {best_params[0]} / +{best_params[1]}% / -{best_params[2]}%")
 
-def walk_forward_analysis(df, initial_cash, train_days=252, test_days=63):
+def walk_forward_analysis(df, initial_cash, train_days=252, test_days=63, ai_mode="OFF", ai_threshold=0.6, ai_probs=None):
     df = df.sort_index()
     results = []
     start = 0
@@ -543,19 +617,17 @@ def walk_forward_analysis(df, initial_cash, train_days=252, test_days=63):
             train_df.copy(), initial_cash, st.session_state['mode'], st.session_state['target_w'],
             st.session_state['up_a'], st.session_state['sell_b'], st.session_state['down_c'], st.session_state['buy_d'],
             st.session_state.get('base_mode', 'TOTAL'),
-            st.session_state.get('use_ai_filter', False),
-            st.session_state.get('ai_threshold', 0.6),
-            st.session_state.get('ai_period', '6mo'),
-            st.session_state.get('ai_interval', '1d'),
+            ai_mode,
+            ai_threshold,
+            ai_probs
         )
         _, _, ret_test, bh_test = run_backtest(
             test_df.copy(), initial_cash, st.session_state['mode'], st.session_state['target_w'],
             st.session_state['up_a'], st.session_state['sell_b'], st.session_state['down_c'], st.session_state['buy_d'],
             st.session_state.get('base_mode', 'TOTAL'),
-            st.session_state.get('use_ai_filter', False),
-            st.session_state.get('ai_threshold', 0.6),
-            st.session_state.get('ai_period', '6mo'),
-            st.session_state.get('ai_interval', '1d'),
+            ai_mode,
+            ai_threshold,
+            ai_probs
         )
         results.append({
             "훈련기간": f"{train_df.index[0].date()} ~ {train_df.index[-1].date()}",
@@ -881,7 +953,7 @@ with col_main:
                 if 'mode' not in st.session_state:
                     st.session_state.update({
                         'mode':'VALUE','target_w':50,'up_a':10.0,'sell_b':50,'down_c':10.0,'buy_d':50,
-                        'base_mode':'TOTAL','use_ai_filter': False,'ai_threshold':0.6,'ai_threshold_pct':60.0,'ai_period':'6mo','ai_interval':'1d'
+                        'base_mode':'TOTAL','use_ai_filter': False,'ai_mode':'OFF','ai_threshold':0.6,'ai_threshold_pct':60.0,'ai_period':'6mo','ai_interval':'1d'
                     })
                 with st.container(border=True):
                     st.radio("매매 비율 기준", ['TOTAL','STOCK'], key='base_mode', format_func=lambda x: "현금+주식" if x=="TOTAL" else "주식 평가액")
@@ -892,29 +964,45 @@ with col_main:
                     st.markdown("**매수**")
                     st.slider("하락폭 트리거(%)", 1.0, 30.0, key='down_c', step=0.5)
                     st.slider("매수 비율(%)", 10, 100, key='buy_d', step=10)
-                    st.markdown("**AI 필터**")
-                    st.checkbox("AI 상승확률 필터 사용", key='use_ai_filter')
+                    st.markdown("**AI 필터/엔트리**")
+                    st.selectbox("AI 사용 모드", ["OFF","FILTER","ENTRY"], key='ai_mode')
                     if 'ai_threshold_pct' not in st.session_state: st.session_state['ai_threshold_pct'] = 60.0
                     ai_pct_val = st.slider("AI 임계값(%)", 50.0, 80.0, key='ai_threshold_pct', value=st.session_state.get('ai_threshold_pct', 60.0), step=1.0)
                     st.session_state['ai_threshold'] = ai_pct_val / 100.0
                     st.selectbox("AI 학습 기간", ["3mo","6mo","1y"], key='ai_period')
                     st.selectbox("AI 데이터 인터벌", ["1d","1h"], key='ai_interval')
-                st.button("✨ 최적 파라미터", on_click=optimize_params, args=(hist_back, st.session_state['sell_b'], st.session_state['buy_d'], st.session_state['target_w']))
+                st.button("✨ 최적 파라미터", on_click=optimize_params, args=(hist_back, st.session_state['sell_b'], st.session_state['buy_d'], st.session_state['target_w'], st.session_state.get('ai_mode','OFF'), st.session_state.get('ai_threshold',0.6)))
             with cr:
                 if len(hist_back) > 0:
+                    ai_probs = None
+                    ai_metrics = {}
+                    ai_err = None
+                    if st.session_state.get('ai_mode','OFF') != "OFF":
+                        prob_series, ai_metrics, ai_err = compute_ai_signals(hist_back.copy(), period=st.session_state.get('ai_period','6mo'), interval=st.session_state.get('ai_interval','1d'), horizon=5, neutral_band=0.01)
+                        if prob_series is not None:
+                            ai_probs = prob_series.to_dict()
+                        elif ai_err:
+                            st.warning(f"AI 신호 계산 실패: {ai_err}")
                     df_r, logs_sim, ret, b_ret = run_backtest(
                         hist_back.copy(), 10000, st.session_state['mode'], st.session_state['target_w'],
                         st.session_state['up_a'], st.session_state['sell_b'], st.session_state['down_c'], st.session_state['buy_d'],
                         st.session_state.get('base_mode','TOTAL'),
-                        st.session_state.get('use_ai_filter', False),
+                        st.session_state.get('ai_mode','OFF'),
                         st.session_state.get('ai_threshold', 0.6),
-                        st.session_state.get('ai_period', '6mo'),
-                        st.session_state.get('ai_interval', '1d'),
+                        ai_probs,
                     )
                     c1, c2, c3 = st.columns(3)
                     c1.metric("전략 수익", f"{ret:.2f}%", delta=f"{ret-b_ret:.2f}%p")
                     c2.metric("단순 보유", f"{b_ret:.2f}%")
                     c3.metric("매매 횟수", f"{len(logs_sim)}회")
+                    if ai_metrics:
+                        m_acc = np.mean(ai_metrics.get("val_acc", [])) if ai_metrics.get("val_acc") else None
+                        m_auc = np.mean(ai_metrics.get("val_auc", [])) if ai_metrics.get("val_auc") else None
+                        m_brier = np.mean(ai_metrics.get("val_brier", [])) if ai_metrics.get("val_brier") else None
+                        with st.expander("AI 검증 메트릭", expanded=False):
+                            st.write(f"Val Acc: {m_acc:.3f}" if m_acc is not None else "Val Acc: N/A")
+                            st.write(f"Val AUC: {m_auc:.3f}" if m_auc is not None else "Val AUC: N/A")
+                            st.write(f"Brier: {m_brier:.3f}" if m_brier is not None else "Brier: N/A")
                     f_b = go.Figure()
                     f_b.add_trace(go.Scatter(x=df_r.index, y=df_r['Strategy_Asset'], name='전략', line=dict(color='#ef4444', width=2)))
                     f_b.add_trace(go.Scatter(x=df_r.index, y=df_r['Close']*(10000/df_r['Close'].iloc[0]), name='보유', line=dict(color='#e5e7eb', dash='dot')))
@@ -936,7 +1024,7 @@ with col_main:
                                 st.warning("데이터가 부족합니다. 기간을 줄이세요.")
                             else:
                                 with st.spinner("전진 분석 중..."):
-                                    wf_df = walk_forward_analysis(hist_back.copy(), initial_cash, train_days=train_days, test_days=test_days)
+                                    wf_df = walk_forward_analysis(hist_back.copy(), initial_cash, train_days=train_days, test_days=test_days, ai_mode=st.session_state.get('ai_mode','OFF'), ai_threshold=st.session_state.get('ai_threshold',0.6), ai_probs=ai_probs)
                                 if wf_df.empty:
                                     st.warning("분석할 윈도우가 없습니다. 기간을 조정하세요.")
                                 else:
