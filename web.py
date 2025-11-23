@@ -399,7 +399,8 @@ def get_sp500_short_signals(limit=30, interval="1d", period="1mo"):
 # ---------------------------------------------------------
 # 2. 핵심 로직 (백테스팅)
 # ---------------------------------------------------------
-def run_backtest(df, initial_cash, mode, target_weight, trigger_up, sell_pct, trigger_down, buy_pct):
+def run_backtest(df, initial_cash, mode, target_weight, trigger_up, sell_pct, trigger_down, buy_pct, base_mode="TOTAL"):
+    # mode은 호환성 유지용이며 VALUE만 사용, base_mode는 매매 비율 산정 기준 (TOTAL: 현금+주식, STOCK: 주식가치)
     cash = initial_cash
     start_price = df.iloc[0]['Close']
     initial_invest = (initial_cash * (target_weight / 100))
@@ -411,32 +412,32 @@ def run_backtest(df, initial_cash, mode, target_weight, trigger_up, sell_pct, tr
         price = row['Close']
         stock_val = shares * price
         total_val = cash + stock_val
-        current_weight = (stock_val / total_val * 100) if total_val > 0 else 0
         action_taken = False; should_sell = False
-        if mode == 'VALUE': 
-            if shares > 0 and price >= last_rebal_price * (1 + trigger_up/100): should_sell = True
-        elif mode == 'WEIGHT': 
-            if current_weight >= target_weight + trigger_up: should_sell = True
+        # 상승시 매도 (가격 밴드 기준)
+        if shares > 0 and price >= last_rebal_price * (1 + trigger_up/100):
+            should_sell = True
         if should_sell:
-            sell_qty = shares * (sell_pct / 100) 
+            base_val = total_val if base_mode == "TOTAL" else stock_val
+            target_sell_val = base_val * (sell_pct / 100)
+            sell_qty = min(stock_val, target_sell_val) / price if price > 0 else 0
             if sell_qty > 0:
                 shares -= sell_qty; cash += sell_qty * price
                 pct_diff = (price - last_rebal_price)/last_rebal_price*100
-                trade_log.append({"date": date, "type": "🔴 매도", "price": price, "qty": sell_qty, "cause": f"{'상승' if mode=='VALUE' else '비중초과'} (+{pct_diff:.1f}%)"})
+                trade_log.append({"date": date, "type": "🔴 매도", "price": price, "qty": sell_qty, "cause": f"상승 밴드 (+{pct_diff:.1f}%)"})
                 last_rebal_price = price; action_taken = True
         if not action_taken:
             should_buy = False
-            if mode == 'VALUE':
-                if price <= last_rebal_price * (1 - trigger_down/100) or (shares == 0 and cash > price): should_buy = True
-            elif mode == 'WEIGHT':
-                if current_weight <= target_weight - trigger_down: should_buy = True
+            if price <= last_rebal_price * (1 - trigger_down/100) or (shares == 0 and cash > price):
+                should_buy = True
             if should_buy:
-                invest_amt = cash * (buy_pct / 100)
+                base_val = total_val if base_mode == "TOTAL" else stock_val
+                invest_amt = base_val * (buy_pct / 100)
+                invest_amt = min(invest_amt, cash)
                 buy_qty = invest_amt / price 
                 if buy_qty > 0:
                     shares += buy_qty; cash -= buy_qty * price
                     pct_diff = (price - last_rebal_price)/last_rebal_price*100
-                    trade_log.append({"date": date, "type": "🔵 매수", "price": price, "qty": buy_qty, "cause": f"{'하락' if mode=='VALUE' else '비중미달'} ({pct_diff:.1f}%)"})
+                    trade_log.append({"date": date, "type": "🔵 매수", "price": price, "qty": buy_qty, "cause": f"하락 밴드 ({pct_diff:.1f}%)"})
                     last_rebal_price = price
         history.append(cash + (shares * price))
     df['Strategy_Asset'] = history
@@ -448,14 +449,12 @@ def optimize_params(df, fixed_b, fixed_d, target_w):
     if len(df) < 10: st.toast("❌ 데이터 부족"); return
     best_ret = -9999
     best_params = (st.session_state.get('mode', 'VALUE'), st.session_state.get('up_a', 10.0), st.session_state.get('down_c', 10.0))
-    modes = ['VALUE', 'WEIGHT']
     search_ranges = [3.0, 5.0, 7.5, 10.0, 12.5, 15.0, 20.0]
     st.toast("🤖 시뮬레이션 중...")
-    for m in modes:
-        for a_val in search_ranges:
-            for c_val in search_ranges:
-                _, _, ret, _ = run_backtest(df.copy(), 10000, m, target_w, a_val, fixed_b, c_val, fixed_d)
-                if ret > best_ret: best_ret = ret; best_params = (m, a_val, c_val)
+    for a_val in search_ranges:
+        for c_val in search_ranges:
+            _, _, ret, _ = run_backtest(df.copy(), 10000, 'VALUE', target_w, a_val, fixed_b, c_val, fixed_d, st.session_state.get('base_mode', 'TOTAL'))
+            if ret > best_ret: best_ret = ret; best_params = ('VALUE', a_val, c_val)
     st.session_state['mode'] = best_params[0]; st.session_state['up_a'] = best_params[1]; st.session_state['down_c'] = best_params[2]
     st.toast(f"✅ 최적 전략: {best_params[0]} / +{best_params[1]}% / -{best_params[2]}%")
 
@@ -472,8 +471,16 @@ def walk_forward_analysis(df, initial_cash, train_days=252, test_days=63):
         test_df = df.iloc[train_end:test_end].copy()
         if len(train_df) < train_days * 0.5 or len(test_df) < test_days * 0.5:
             break
-        _, _, ret_train, bh_train = run_backtest(train_df.copy(), initial_cash, st.session_state['mode'], st.session_state['target_w'], st.session_state['up_a'], st.session_state['sell_b'], st.session_state['down_c'], st.session_state['buy_d'])
-        _, _, ret_test, bh_test = run_backtest(test_df.copy(), initial_cash, st.session_state['mode'], st.session_state['target_w'], st.session_state['up_a'], st.session_state['sell_b'], st.session_state['down_c'], st.session_state['buy_d'])
+        _, _, ret_train, bh_train = run_backtest(
+            train_df.copy(), initial_cash, st.session_state['mode'], st.session_state['target_w'],
+            st.session_state['up_a'], st.session_state['sell_b'], st.session_state['down_c'], st.session_state['buy_d'],
+            st.session_state.get('base_mode', 'TOTAL')
+        )
+        _, _, ret_test, bh_test = run_backtest(
+            test_df.copy(), initial_cash, st.session_state['mode'], st.session_state['target_w'],
+            st.session_state['up_a'], st.session_state['sell_b'], st.session_state['down_c'], st.session_state['buy_d'],
+            st.session_state.get('base_mode', 'TOTAL')
+        )
         results.append({
             "훈련기간": f"{train_df.index[0].date()} ~ {train_df.index[-1].date()}",
             "검증기간": f"{test_df.index[0].date()} ~ {test_df.index[-1].date()}",
@@ -734,20 +741,21 @@ with col_main:
             st.divider()
             ci, cr = st.columns([1, 2])
             with ci:
-                if 'mode' not in st.session_state: st.session_state.update({'mode':'VALUE','target_w':50,'up_a':10.0,'sell_b':50,'down_c':10.0,'buy_d':50})
+                if 'mode' not in st.session_state:
+                    st.session_state.update({'mode':'VALUE','target_w':50,'up_a':10.0,'sell_b':50,'down_c':10.0,'buy_d':50,'base_mode':'TOTAL'})
                 with st.container(border=True):
-                    sel_mode = st.radio("기준", ['VALUE','WEIGHT'], format_func=lambda x: '평가액 변동' if x=='VALUE' else '비중 변동', key='mode')
-                    if sel_mode == 'WEIGHT': st.slider("목표비중", 10, 90, key='target_w', step=10)
+                    st.radio("매매 비율 기준", ['TOTAL','STOCK'], key='base_mode', format_func=lambda x: "현금+주식" if x=="TOTAL" else "주식 평가액")
+                    st.slider("초기 투자 비중(%)", 10, 90, key='target_w', step=10)
                     st.markdown("**매도**")
-                    st.slider("상승폭/비중초과", 1.0, 30.0, key='up_a', step=0.5)
-                    st.slider("매도량(%)", 10, 100, key='sell_b', step=10)
+                    st.slider("상승폭 트리거(%)", 1.0, 30.0, key='up_a', step=0.5)
+                    st.slider("매도 비율(%)", 10, 100, key='sell_b', step=10)
                     st.markdown("**매수**")
-                    st.slider("하락폭/비중미달", 1.0, 30.0, key='down_c', step=0.5)
-                    st.slider("매수량(%)", 10, 100, key='buy_d', step=10)
+                    st.slider("하락폭 트리거(%)", 1.0, 30.0, key='down_c', step=0.5)
+                    st.slider("매수 비율(%)", 10, 100, key='buy_d', step=10)
                 st.button("✨ 최적 파라미터", on_click=optimize_params, args=(hist_back, st.session_state['sell_b'], st.session_state['buy_d'], st.session_state['target_w']))
             with cr:
                 if len(hist_back) > 0:
-                    df_r, logs_sim, ret, b_ret = run_backtest(hist_back.copy(), 10000, st.session_state['mode'], st.session_state['target_w'], st.session_state['up_a'], st.session_state['sell_b'], st.session_state['down_c'], st.session_state['buy_d'])
+                    df_r, logs_sim, ret, b_ret = run_backtest(hist_back.copy(), 10000, st.session_state['mode'], st.session_state['target_w'], st.session_state['up_a'], st.session_state['sell_b'], st.session_state['down_c'], st.session_state['buy_d'], st.session_state.get('base_mode','TOTAL'))
                     c1, c2, c3 = st.columns(3)
                     c1.metric("전략 수익", f"{ret:.2f}%", delta=f"{ret-b_ret:.2f}%p")
                     c2.metric("단순 보유", f"{b_ret:.2f}%")
