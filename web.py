@@ -632,7 +632,7 @@ with col_side:
     
     sim_col1, sim_col2, sim_col3 = st.columns([1, 1, 1])
     sim_period = sim_col1.selectbox("시뮬레이션 기간", ["6mo", "1y", "2y", "5y"], index=1)
-    show_norm = sim_col2.checkbox("정규화(=100 기준)", value=False)
+    view_mode = sim_col2.selectbox("표시 방식", ["자산(USD)", "정규화(=100)", "수익률(%)"], index=0)
     bench_ticker = sim_col3.selectbox("벤치마크", ["SPY", "QQQ", "VT", "IWV", "없음"], index=0)
 
     if st.button("📈 자산 추이 (Simulation)", use_container_width=True):
@@ -665,25 +665,32 @@ with col_side:
                     if len(portfolio_hist) == 0:
                         st.warning("계산할 자산 곡선이 없습니다.")
                     else:
-                        if show_norm:
-                            base = portfolio_hist.iloc[0] if portfolio_hist.iloc[0] != 0 else 1
-                            plot_series = portfolio_hist / base * 100
+                        bench_plot = None
+                        bench_series_aligned = None
+                        if bench_series is not None and len(bench_series) > 0:
+                            bench_series_aligned = bench_series.reindex(portfolio_hist.index).ffill().dropna()
+                            if len(bench_series_aligned) == 0:
+                                bench_series_aligned = None
+
+                        base_port = portfolio_hist.iloc[0] if portfolio_hist.iloc[0] != 0 else 1
+                        if view_mode == "정규화(=100)":
+                            plot_series = portfolio_hist / base_port * 100
                             y_label = "지수화(=100)"
-                            if bench_series is not None and len(bench_series) > 0:
-                                bench_start = bench_series.iloc[0]
-                                if isinstance(bench_start, pd.Series):
-                                    bench_start = bench_start.iloc[0]
-                                bench_base = bench_start if bench_start != 0 else 1
-                                bench_plot = bench_series / bench_base * 100
+                            if bench_series_aligned is not None:
+                                bench_base = bench_series_aligned.iloc[0] if bench_series_aligned.iloc[0] != 0 else 1
+                                bench_plot = bench_series_aligned / bench_base * 100
+                        elif view_mode == "수익률(%)":
+                            plot_series = (portfolio_hist / base_port - 1) * 100
+                            y_label = "수익률(%)"
+                            if bench_series_aligned is not None:
+                                bench_base = bench_series_aligned.iloc[0] if bench_series_aligned.iloc[0] != 0 else 1
+                                bench_plot = (bench_series_aligned / bench_base - 1) * 100
                         else:
                             plot_series = portfolio_hist
                             y_label = "총 자산 (USD)"
-                            if bench_series is not None and len(bench_series) > 0:
-                                    bench_start = bench_series.iloc[0]
-                                    if isinstance(bench_start, pd.Series):
-                                        bench_start = bench_start.iloc[0]
-                                    bench_base = bench_start if bench_start != 0 else 1
-                                    bench_plot = bench_series / bench_base * plot_series.iloc[0]
+                            if bench_series_aligned is not None:
+                                bench_base = bench_series_aligned.iloc[0] if bench_series_aligned.iloc[0] != 0 else 1
+                                bench_plot = bench_series_aligned / bench_base * plot_series.iloc[0]
 
                         roll_max = portfolio_hist.cummax()
                         drawdown = (portfolio_hist / roll_max - 1) * 100
