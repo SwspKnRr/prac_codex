@@ -472,13 +472,15 @@ def walk_forward_analysis(df, initial_cash, train_days=252, test_days=63):
         test_df = df.iloc[train_end:test_end].copy()
         if len(train_df) < train_days * 0.5 or len(test_df) < test_days * 0.5:
             break
-        _, _, ret_train, _ = run_backtest(train_df.copy(), initial_cash, st.session_state['mode'], st.session_state['target_w'], st.session_state['up_a'], st.session_state['sell_b'], st.session_state['down_c'], st.session_state['buy_d'])
-        _, _, ret_test, _ = run_backtest(test_df.copy(), initial_cash, st.session_state['mode'], st.session_state['target_w'], st.session_state['up_a'], st.session_state['sell_b'], st.session_state['down_c'], st.session_state['buy_d'])
+        _, _, ret_train, bh_train = run_backtest(train_df.copy(), initial_cash, st.session_state['mode'], st.session_state['target_w'], st.session_state['up_a'], st.session_state['sell_b'], st.session_state['down_c'], st.session_state['buy_d'])
+        _, _, ret_test, bh_test = run_backtest(test_df.copy(), initial_cash, st.session_state['mode'], st.session_state['target_w'], st.session_state['up_a'], st.session_state['sell_b'], st.session_state['down_c'], st.session_state['buy_d'])
         results.append({
             "훈련기간": f"{train_df.index[0].date()} ~ {train_df.index[-1].date()}",
             "검증기간": f"{test_df.index[0].date()} ~ {test_df.index[-1].date()}",
             "훈련수익률(%)": round(ret_train, 2),
-            "검증수익률(%)": round(ret_test, 2)
+            "검증수익률(%)": round(ret_test, 2),
+            "훈련_단순보유(%)": round(bh_train, 2),
+            "검증_단순보유(%)": round(bh_test, 2),
         })
         start += test_days
     return pd.DataFrame(results)
@@ -776,8 +778,11 @@ with col_main:
                                     st.warning("분석할 윈도우가 없습니다. 기간을 조정하세요.")
                                 else:
                                     st.dataframe(wf_df, use_container_width=True)
-                                    st.metric("평균 훈련 수익률", f"{wf_df['훈련수익률(%)'].mean():.2f}%")
-                                    st.metric("평균 검증 수익률", f"{wf_df['검증수익률(%)'].mean():.2f}%")
+                                    c_w1, c_w2, c_w3, c_w4 = st.columns(4)
+                                    c_w1.metric("평균 훈련 수익률", f"{wf_df['훈련수익률(%)'].mean():.2f}%")
+                                    c_w2.metric("평균 검증 수익률", f"{wf_df['검증수익률(%)'].mean():.2f}%")
+                                    c_w3.metric("훈련 BH", f"{wf_df['훈련_단순보유(%)'].mean():.2f}%")
+                                    c_w4.metric("검증 BH", f"{wf_df['검증_단순보유(%)'].mean():.2f}%")
 
         with tab2:
             min_len = 60
