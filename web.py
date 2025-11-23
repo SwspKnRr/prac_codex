@@ -278,6 +278,53 @@ def _pct_from_n(series, n):
 def _clamp(val, lo=-1.0, hi=1.0):
     return max(lo, min(hi, val))
 
+# --- ML Feature Engineering ---
+def add_technical_features(df):
+    df = df.copy()
+    df['ma5'] = df['Close'].rolling(window=5).mean()
+    df['ma20'] = df['Close'].rolling(window=20).mean()
+    df['ma60'] = df['Close'].rolling(window=60).mean()
+    df['disparity_20'] = (df['Close'] / df['ma20']) - 1
+
+    std20 = df['Close'].rolling(window=20).std()
+    df['upper_band'] = df['ma20'] + (std20 * 2)
+    df['lower_band'] = df['ma20'] - (std20 * 2)
+    df['bb_position'] = (df['Close'] - df['lower_band']) / (df['upper_band'] - df['lower_band'])
+
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['rsi_feat'] = 100 - (100 / (1 + rs))
+
+    df['vol_change'] = df['Volume'].pct_change()
+    df['return_1d'] = df['Close'].pct_change()
+    df['return_2d'] = df['Close'].pct_change(2)
+    df = df.dropna()
+    return df
+
+def train_prediction_model(df):
+    try:
+        from sklearn.ensemble import RandomForestClassifier
+    except ImportError as e:
+        return None, None, "scikit-learn 미설치"
+
+    df_feat = add_technical_features(df)
+    df_feat['Target'] = (df_feat['Close'].shift(-1) > df_feat['Close']).astype(int)
+    if len(df_feat) < 30:
+        return None, None, "데이터가 부족합니다 (30행 이상 필요)"
+    data_for_training = df_feat.iloc[:-1]
+    last_row_features = df_feat.iloc[[-1]]
+    feature_cols = ['disparity_20', 'bb_position', 'rsi_feat', 'vol_change', 'return_1d', 'return_2d']
+    X = data_for_training[feature_cols]
+    y = data_for_training['Target']
+
+    model = RandomForestClassifier(n_estimators=120, min_samples_split=8, max_depth=6, random_state=42)
+    model.fit(X, y)
+    prob_up = model.predict_proba(last_row_features[feature_cols])[0][1]
+    importances = dict(zip(feature_cols, model.feature_importances_))
+    return prob_up, importances, None
+
 def compute_short_term_signal(df):
     if df is None or df.empty or len(df) < 20:
         return None
@@ -904,6 +951,31 @@ with col_main:
                     with st.expander("지표 세부값"):
                         st.dataframe(pd.DataFrame(feat_rows), use_container_width=True)
                     st.info("진입 예시: 상승 확률>60% && 스프레드/유동성 조건 만족 시 분할 진입, 손절은 -stop% 또는 직전 저점 아래에 위치.")
+
+            st.markdown("### 🤖 AI 예측 모델 (Random Forest)")
+            if len(hist_chart) >= 60:
+                if st.button("AI 예측 실행"):
+                    with st.spinner("AI 학습/예측 중..."):
+                        prob_ai, importances, err = train_prediction_model(hist_chart.copy())
+                    if err:
+                        st.error(err)
+                    else:
+                        ai_prob_pct = prob_ai * 100
+                        col_ai1, col_ai2 = st.columns([1, 2])
+                        col_ai1.metric("AI 예상 상승 확률", f"{ai_prob_pct:.1f}%", delta=f"{ai_prob_pct - 50:.1f}%p vs 50")
+                        with col_ai2:
+                            if prob_ai > 0.6:
+                                st.success(f"AI 의견: 매수 우위 ({ai_prob_pct:.1f}%)")
+                            elif prob_ai < 0.4:
+                                st.error(f"AI 의견: 매도/관망 우위 ({ai_prob_pct:.1f}%)")
+                            else:
+                                st.warning(f"AI 의견: 중립 ({ai_prob_pct:.1f}%)")
+                        if importances:
+                            with st.expander("AI 중요 변수"):
+                                imp_df = pd.DataFrame({"Feature": list(importances.keys()), "Importance": list(importances.values())}).sort_values("Importance", ascending=False)
+                                st.bar_chart(imp_df.set_index("Feature"))
+            else:
+                st.warning("AI 학습을 위해 최소 60개 이상의 데이터가 필요합니다.")
 
         with tab4:
             st.markdown("### S&P500 단기 신호 랭킹")
