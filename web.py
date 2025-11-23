@@ -664,7 +664,7 @@ with col_side:
                         try:
                             bench_data = yf.download(bench_ticker, period=sim_period)['Close']
                             if hasattr(bench_data.index, "tz"): bench_data = bench_data.tz_localize(None)
-                            bench_series = bench_data.dropna()
+                            bench_series = bench_data
                         except Exception:
                             bench_series = None
 
@@ -674,8 +674,8 @@ with col_side:
                         bench_plot = None
                         bench_series_aligned = None
                         if bench_series is not None and len(bench_series) > 0:
-                            bench_series_aligned = bench_series.reindex(portfolio_hist.index).ffill().dropna()
-                            if len(bench_series_aligned) == 0:
+                            bench_series_aligned = bench_series.reindex(portfolio_hist.index).ffill()
+                            if bench_series_aligned.notna().sum() == 0:
                                 bench_series_aligned = None
 
                         base_port = portfolio_hist.iloc[0] if portfolio_hist.iloc[0] != 0 else 1
