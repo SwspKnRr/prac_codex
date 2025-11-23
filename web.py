@@ -893,8 +893,8 @@ with col_main:
                     st.markdown("**AI 필터**")
                     st.checkbox("AI 상승확률 필터 사용", key='use_ai_filter')
                     if 'ai_threshold_pct' not in st.session_state: st.session_state['ai_threshold_pct'] = 60.0
-                    st.session_state['ai_threshold_pct'] = st.slider("AI 임계값(%)", 50.0, 80.0, key='ai_threshold_pct', value=st.session_state.get('ai_threshold_pct', 60.0), step=1.0)
-                    st.session_state['ai_threshold'] = st.session_state['ai_threshold_pct'] / 100.0
+                    ai_pct_val = st.slider("AI 임계값(%)", 50.0, 80.0, key='ai_threshold_pct', value=st.session_state.get('ai_threshold_pct', 60.0), step=1.0)
+                    st.session_state['ai_threshold'] = ai_pct_val / 100.0
                     st.selectbox("AI 학습 기간", ["3mo","6mo","1y"], key='ai_period')
                     st.selectbox("AI 데이터 인터벌", ["1d","1h"], key='ai_interval')
                 st.button("✨ 최적 파라미터", on_click=optimize_params, args=(hist_back, st.session_state['sell_b'], st.session_state['buy_d'], st.session_state['target_w']))
