@@ -670,13 +670,20 @@ with col_side:
                             plot_series = portfolio_hist / base * 100
                             y_label = "지수화(=100)"
                             if bench_series is not None and len(bench_series) > 0:
-                                bench_base = bench_series.iloc[0] if bench_series.iloc[0] != 0 else 1
+                                bench_start = bench_series.iloc[0]
+                                if isinstance(bench_start, pd.Series):
+                                    bench_start = bench_start.iloc[0]
+                                bench_base = bench_start if bench_start != 0 else 1
                                 bench_plot = bench_series / bench_base * 100
                         else:
                             plot_series = portfolio_hist
                             y_label = "총 자산 (USD)"
                             if bench_series is not None and len(bench_series) > 0:
-                                bench_plot = bench_series / bench_series.iloc[0] * plot_series.iloc[0]
+                                    bench_start = bench_series.iloc[0]
+                                    if isinstance(bench_start, pd.Series):
+                                        bench_start = bench_start.iloc[0]
+                                    bench_base = bench_start if bench_start != 0 else 1
+                                    bench_plot = bench_series / bench_base * plot_series.iloc[0]
 
                         roll_max = portfolio_hist.cummax()
                         drawdown = (portfolio_hist / roll_max - 1) * 100
