@@ -342,6 +342,38 @@ def compute_short_term_signal(df):
         "recent_low": low.tail(50).min(),
     }
 
+# S&P500 주요 티커 (상위 시총 중심)
+SP500_TICKERS = [
+    "AAPL","MSFT","NVDA","AMZN","META","AVGO","LLY","JPM","GOOGL","GOOG",
+    "XOM","UNH","JNJ","V","HD","PG","MA","COST","ABBV","BAC",
+    "MRK","CVX","ADBE","WMT","PEP","KO","ORCL","NFLX","CRM","AMD",
+    "INTC","CSCO","TXN","LIN","MCD","DIS","TMO","ABT","AMGN","HON",
+    "PM","ACN","CAT","IBM","GE","LOW","UPS","SPGI","VRTX","BKNG"
+]
+
+@st.cache_data(ttl=1800)
+def get_sp500_short_signals(limit=30, interval="1d", period="1mo"):
+    tickers = SP500_TICKERS[:limit]
+    rows = []
+    for t in tickers:
+        try:
+            df = yf.Ticker(t).history(period=period, interval=interval)
+            sig = compute_short_term_signal(df)
+            if sig:
+                rows.append({
+                    "종목": t,
+                    "상승확률(%)": round(sig["prob_up"] * 100, 2),
+                    "현재가": round(sig["price"], 2),
+                    "타겟(%)": round(sig["target_pct"], 2),
+                    "손절(%)": round(sig["stop_pct"], 2),
+                    "모멘텀5(%)": None if sig["mom_5"] is None else round(sig["mom_5"], 2),
+                    "거래량배율(x)": None if sig["vol_ratio"] is None else round(sig["vol_ratio"], 2),
+                })
+        except Exception:
+            continue
+    rows = sorted(rows, key=lambda x: x["상승확률(%)"], reverse=True)
+    return pd.DataFrame(rows)
+
 # ---------------------------------------------------------
 # 2. 핵심 로직 (백테스팅)
 # ---------------------------------------------------------
@@ -527,7 +559,7 @@ with col_side:
                                 "가이드": action,
                             })
                         if guide_rows:
-                            st.markdown("#### 매매 가이드 (균등 비중 기준)")
+                            st.markdown("#### 매매 가이드")
                             st.dataframe(pd.DataFrame(guide_rows), use_container_width=True)
 
     st.divider()
@@ -643,7 +675,7 @@ with col_main:
         fig.update_layout(xaxis_rangeslider_visible=False, height=400, margin=dict(l=0, r=0, t=10, b=0))
         st.plotly_chart(fig, use_container_width=True)
 
-        tab1, tab2, tab3 = st.tabs(["🔄 전략 시뮬레이터", "📢 매매 신호", "📈 추세 예측"])
+        tab1, tab2, tab3, tab4 = st.tabs(["🔄 전략 시뮬레이터", "📢 매매 신호", "📈 추세 예측", "📊 S&P500 랭킹"])
         
         with tab1:
             st.markdown("### 🛠️ 과거 데이터 검증")
@@ -795,3 +827,19 @@ with col_main:
                     with st.expander("지표 세부값"):
                         st.dataframe(pd.DataFrame(feat_rows), use_container_width=True)
                     st.info("진입 예시: 상승 확률>60% && 스프레드/유동성 조건 만족 시 분할 진입, 손절은 -stop% 또는 직전 저점 아래에 위치.")
+
+        with tab4:
+            st.markdown("### S&P500 단기 신호 랭킹")
+            col_a, col_b, col_c = st.columns([1,1,1])
+            limit = col_a.slider("검사 종목 수", min_value=10, max_value=len(SP500_TICKERS), value=30, step=10)
+            period_choice = col_b.selectbox("기간", ["1mo", "3mo", "6mo"], index=0)
+            interval_choice = col_c.selectbox("인터벌", ["1d", "1h"], index=0, help="1h는 데이터 제공이 제한될 수 있습니다.")
+
+            if st.button("상승 확률 상위 종목 보기", type="primary"):
+                with st.spinner("신호 계산 중..."):
+                    df_rank = get_sp500_short_signals(limit=limit, interval=interval_choice, period=period_choice)
+                    if df_rank.empty:
+                        st.warning("신호를 계산할 수 없습니다. (데이터 부족 또는 호출 제한)")
+                    else:
+                        st.dataframe(df_rank.head(20), use_container_width=True)
+                        st.caption("정렬: 상승 확률 내림차순 (상위 20개 표시)")
