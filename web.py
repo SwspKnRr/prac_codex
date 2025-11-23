@@ -8,8 +8,6 @@ import math
 from datetime import datetime, timedelta
 import io
 import numpy as np
-import json
-import requests
 
 # ---------------------------------------------------------
 # 1. 페이지 설정 및 초기화
@@ -342,23 +340,6 @@ def get_cached_model(ticker, period, interval):
     except Exception as e:
         return None, None, None, None, str(e)
 
-@st.cache_data(ttl=3600)
-def get_fear_greed():
-    try:
-        resp = requests.get("https://production.dataviz.cnn.io/index/fearandgreed/graphdata", timeout=5)
-        if resp.status_code != 200:
-            return None, "CNN 응답 오류"
-        data = resp.json()
-        now_val = data.get("fear_and_greed", {}).get("score")
-        now_rating = data.get("fear_and_greed", {}).get("rating")
-        prev_val = data.get("fear_and_greed_historical", [])[-2].get("score") if len(data.get("fear_and_greed_historical", [])) >= 2 else None
-        delta = None
-        if now_val is not None and prev_val is not None:
-            delta = now_val - prev_val
-        return {"score": now_val, "rating": now_rating, "delta": delta}, None
-    except Exception as e:
-        return None, str(e)
-
 def compute_short_term_signal(df):
     if df is None or df.empty or len(df) < 20:
         return None
@@ -648,17 +629,6 @@ with col_side:
                 st.info("VIX<15: 변동성 낮음, 과열 여부 확인 후 비중 조절")
     except Exception:
         pass
-    # CNN Fear & Greed
-    fg_data, fg_err = get_fear_greed()
-    if fg_data:
-        st.metric("CNN Fear & Greed", f"{fg_data.get('score', '?')}", delta=f"{fg_data.get('delta', 0):+}")
-        st.caption(f"상태: {fg_data.get('rating', 'unknown')}")
-        if fg_data.get("score", 50) < 30:
-            st.warning("공포 구간: 분할매수/현금 확보 병행")
-        elif fg_data.get("score", 50) > 70:
-            st.warning("탐욕 구간: 비중 축소/분할매도 고려")
-    elif fg_err:
-        st.caption("Fear & Greed 지수 불러오기 실패")
     
     sim_col1, sim_col2, sim_col3 = st.columns([1, 1, 1])
     sim_period = sim_col1.selectbox("시뮬레이션 기간", ["6mo", "1y", "2y", "5y"], index=1)

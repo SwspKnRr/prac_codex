@@ -4,4 +4,3 @@ yfinance
 openpyxl
 plotly
 scikit-learn
-requests
