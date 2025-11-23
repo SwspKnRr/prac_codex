@@ -6,6 +6,7 @@ import sqlite3
 import math
 from datetime import datetime, timedelta
 import io
+import numpy as np
 
 # ---------------------------------------------------------
 # 1. 페이지 설정 및 초기화
@@ -258,6 +259,82 @@ def display_global_dashboard():
     st.divider()
 
 display_global_dashboard()
+
+# ---------------------------------------------------------
+# 단타(초단기) 신호 계산
+# ---------------------------------------------------------
+def _pct_from_n(series, n):
+    if series is None or len(series) < n or n <= 0:
+        return None
+    base = series.iloc[-n]
+    return None if base == 0 else (series.iloc[-1] / base - 1) * 100
+
+def _clamp(val, lo=-1.0, hi=1.0):
+    return max(lo, min(hi, val))
+
+def compute_short_term_signal(df):
+    if df is None or df.empty or len(df) < 20:
+        return None
+
+    close = df['Close']
+    high = df['High']
+    low = df['Low']
+    volume = df['Volume'] if 'Volume' in df else pd.Series(dtype=float)
+    price = close.iloc[-1]
+
+    mom_5 = _pct_from_n(close, 5)
+    mom_15 = _pct_from_n(close, 15)
+    mom_30 = _pct_from_n(close, 30)
+
+    vol_ratio = None
+    if len(volume.dropna()) >= 20:
+        recent_vol = volume.iloc[-1]
+        base_vol = volume.iloc[-20:].median()
+        vol_ratio = None if base_vol == 0 else recent_vol / base_vol
+
+    vwap = None
+    if len(volume.dropna()) >= 10:
+        pv = (close * volume).rolling(30, min_periods=10).sum()
+        vwap_den = volume.rolling(30, min_periods=10).sum()
+        vwap = pv.iloc[-1] / vwap_den.iloc[-1] if vwap_den.iloc[-1] else None
+
+    tr = (high - low)
+    atr14 = tr.rolling(14, min_periods=5).mean().iloc[-1]
+    vol_30 = close.pct_change().rolling(30).std().iloc[-1] * 100 if len(close) >= 30 else None
+
+    score = 0.0
+    weight = 0.0
+    for val, scale, w in [
+        (mom_5, 0.4, 0.35),
+        (mom_15, 0.8, 0.3),
+        (mom_30, 1.2, 0.15),
+        ((vol_ratio - 1) * 100 if vol_ratio else None, 20, 0.1),
+        ((price - vwap) / vwap * 100 if vwap else None, 0.5, 0.1),
+    ]:
+        if val is None or np.isnan(val):
+            continue
+        score += _clamp(val / scale) * w
+        weight += w
+
+    prob_up = (score / weight + 1) / 2 if weight > 0 else 0.5
+    target_pct = max(0.15, (vol_30 or 0.3) * 1.2)
+    stop_pct = max(0.08, (vol_30 or 0.2) * 0.7)
+
+    return {
+        "price": price,
+        "prob_up": prob_up,
+        "mom_5": mom_5,
+        "mom_15": mom_15,
+        "mom_30": mom_30,
+        "vol_ratio": vol_ratio,
+        "vwap": vwap,
+        "atr14": atr14,
+        "vol_30": vol_30,
+        "target_pct": target_pct,
+        "stop_pct": stop_pct,
+        "recent_high": high.tail(50).max(),
+        "recent_low": low.tail(50).min(),
+    }
 
 # ---------------------------------------------------------
 # 2. 핵심 로직 (백테스팅)
@@ -610,5 +687,44 @@ with col_main:
             else: st.warning(f"데이터가 부족합니다 (최소 {min_len}봉 필요)")
         
         with tab3:
-            dv = hist_chart['Close'].pct_change().std()
-            st.info(f"내일 예상 변동: ±${last_price*dv:.2f} ({dv*100:.2f}%)")
+            intr_interval = '1m' if sel_interval in ['1m', '5m'] else '5m'
+            intr_period = '5d' if intr_interval == '1m' else '1mo'
+            st.caption(f"{intr_interval} ??? ?? ??? ?? (?????: {intr_period})")
+            try:
+                short_df = stock.history(period=intr_period, interval=intr_interval)
+            except Exception:
+                short_df = pd.DataFrame()
+
+            if short_df.empty or len(short_df) < 20:
+                st.warning("?? ??? ??? ???? ?????.")
+            else:
+                sig = compute_short_term_signal(short_df)
+                if not sig:
+                    st.warning("?? ??? ??????.")
+                else:
+                    prob = sig['prob_up'] * 100
+                    tgt_px = sig['price'] * (1 + sig['target_pct'] / 100)
+                    stop_px = sig['price'] * (1 - sig['stop_pct'] / 100)
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("?? ??", f"{prob:.1f}%", delta=">60%??? ?? ??")
+                    c2.metric("??/??", f"+{sig['target_pct']:.2f}% / -{sig['stop_pct']:.2f}%", delta=f"${tgt_px:.2f} / ${stop_px:.2f}")
+                    c3.metric("?? ???", f"{(sig['vol_30'] or 0):.2f}%", delta=f"ATR {sig['atr14']:.2f}")
+
+                    st.progress(prob / 100, text="?? ???" if prob >= 50 else "??/?? ??")
+                    st.markdown(
+                        f"- ???: ${sig['price']:.2f} | VWAP: {('N/A' if sig['vwap'] is None else f'${sig['vwap']:.2f}')}"
+                        f"\n- ?? ??/??(50??): ${sig['recent_high']:.2f} / ${sig['recent_low']:.2f}"
+                        f"\n- ??? ????: {('N/A' if sig['vol_ratio'] is None else f'{sig['vol_ratio']:.2f}x')}"
+                    )
+
+                    feat_rows = [
+                        {"??": "??? 5", "?(%)": None if sig['mom_5'] is None else round(sig['mom_5'], 2)},
+                        {"??": "??? 15", "?(%)": None if sig['mom_15'] is None else round(sig['mom_15'], 2)},
+                        {"??": "??? 30", "?(%)": None if sig['mom_30'] is None else round(sig['mom_30'], 2)},
+                        {"??": "VWAP ??", "?(%)": None if sig['vwap'] is None else round((sig['price'] - sig['vwap']) / sig['vwap'] * 100, 3)},
+                        {"??": "??? ??", "?(%)": None if sig['vol_ratio'] is None else round(sig['vol_ratio'] * 100 - 100, 1)},
+                        {"??": "ATR(14)", "?(%)": None if sig['atr14'] is None else round(sig['atr14'], 4)},
+                    ]
+                    with st.expander("?? ???"):
+                        st.dataframe(pd.DataFrame(feat_rows), use_container_width=True)
+                    st.info("?? ??: ?? ??>60% && ????/??? ?? ?? ? ?? ??, ??? -stop% ?? ?? ?? ??? ??.")
