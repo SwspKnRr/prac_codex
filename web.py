@@ -334,10 +334,10 @@ def add_technical_features(df, period="6mo", interval="1d"):
     df = df.dropna(subset=required_cols)
     return df
 
-def train_prediction_model(df, period="6mo", interval="1d", horizon=5, neutral_band=0.01, min_rows=120):
+def train_prediction_model(df, period="6mo", interval="1d", horizon=5, neutral_band=0.01, min_rows=60):
     try:
         from sklearn.ensemble import RandomForestClassifier
-    except ImportError as e:
+    except ImportError:
         return None, None, None, None, "scikit-learn 미설치"
 
     df_feat = add_technical_features(df, period=period, interval=interval)
@@ -392,7 +392,7 @@ def train_prediction_model(df, period="6mo", interval="1d", horizon=5, neutral_b
     return prob_up, importances, model, feature_cols, metrics
 
 @st.cache_resource
-def get_cached_model(ticker, period, interval, horizon=5, neutral_band=0.01, min_rows=120):
+def get_cached_model(ticker, period, interval, horizon=5, neutral_band=0.01, min_rows=60):
     try:
         hist = yf.Ticker(ticker).history(period=period, interval=interval)
         prob_up, importances, model, feature_cols, err = train_prediction_model(hist, period=period, interval=interval, horizon=horizon, neutral_band=neutral_band, min_rows=min_rows)
@@ -400,7 +400,7 @@ def get_cached_model(ticker, period, interval, horizon=5, neutral_band=0.01, min
     except Exception as e:
         return None, None, None, None, str(e)
 
-def compute_ai_signals(df, period="6mo", interval="1d", horizon=5, neutral_band=0.01, min_rows=120):
+def compute_ai_signals(df, period="6mo", interval="1d", horizon=5, neutral_band=0.01, min_rows=60):
     prob_up, importances, model, feature_cols, metrics = train_prediction_model(df, period=period, interval=interval, horizon=horizon, neutral_band=neutral_band, min_rows=min_rows)
     if model is None:
         return None, None, importances  # importances carries err string if failed
