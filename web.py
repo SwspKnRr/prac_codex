@@ -677,19 +677,28 @@ with col_side:
                             plot_series = portfolio_hist / base_port * 100
                             y_label = "지수화(=100)"
                             if bench_series_aligned is not None:
-                                bench_base = bench_series_aligned.iloc[0] if bench_series_aligned.iloc[0] != 0 else 1
+                                bench_start = bench_series_aligned.iloc[0]
+                                if isinstance(bench_start, pd.Series):
+                                    bench_start = bench_start.iloc[0]
+                                bench_base = bench_start if bench_start != 0 else 1
                                 bench_plot = bench_series_aligned / bench_base * 100
                         elif view_mode == "수익률(%)":
                             plot_series = (portfolio_hist / base_port - 1) * 100
                             y_label = "수익률(%)"
                             if bench_series_aligned is not None:
-                                bench_base = bench_series_aligned.iloc[0] if bench_series_aligned.iloc[0] != 0 else 1
+                                bench_start = bench_series_aligned.iloc[0]
+                                if isinstance(bench_start, pd.Series):
+                                    bench_start = bench_start.iloc[0]
+                                bench_base = bench_start if bench_start != 0 else 1
                                 bench_plot = (bench_series_aligned / bench_base - 1) * 100
                         else:
                             plot_series = portfolio_hist
                             y_label = "총 자산 (USD)"
                             if bench_series_aligned is not None:
-                                bench_base = bench_series_aligned.iloc[0] if bench_series_aligned.iloc[0] != 0 else 1
+                                bench_start = bench_series_aligned.iloc[0]
+                                if isinstance(bench_start, pd.Series):
+                                    bench_start = bench_start.iloc[0]
+                                bench_base = bench_start if bench_start != 0 else 1
                                 bench_plot = bench_series_aligned / bench_base * plot_series.iloc[0]
 
                         roll_max = portfolio_hist.cummax()
