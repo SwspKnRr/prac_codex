@@ -329,7 +329,9 @@ def add_technical_features(df, period="6mo", interval="1d"):
     except Exception:
         df['spy_ret'] = np.nan
 
-    df = df.dropna()
+    # 필수 피처만 NaN 제거, 시장 피처는 누락돼도 학습 가능하도록 둔다
+    required_cols = ['ma5', 'ma20', 'ma60', 'disparity_20', 'bb_position', 'rsi_feat', 'vol_change', 'vol_spike', 'return_1d', 'return_2d', 'gap', 'range']
+    df = df.dropna(subset=required_cols)
     return df
 
 def train_prediction_model(df, period="6mo", interval="1d", horizon=5, neutral_band=0.01, min_rows=120):
@@ -345,7 +347,10 @@ def train_prediction_model(df, period="6mo", interval="1d", horizon=5, neutral_b
     future_ret = df_feat['Close'].shift(-horizon) / df_feat['Close'] - 1
     df_feat['Target'] = np.where(future_ret < -neutral_band, 0, np.where(future_ret > neutral_band, 2, 1))
     df_feat = df_feat.iloc[:-horizon]  # 마지막 horizon은 레이블 없음
-    last_row_features = add_technical_features(df.tail(200), period=period, interval=interval).iloc[[-1]]
+    last_feat = add_technical_features(df.tail(max(200, horizon + 60)), period=period, interval=interval)
+    if last_feat.empty:
+        return None, None, None, None, "최신 데이터가 충분하지 않습니다"
+    last_row_features = last_feat.iloc[[-1]]
 
     feature_cols = ['disparity_20', 'bb_position', 'rsi_feat', 'vol_change', 'vol_spike', 'return_1d', 'return_2d', 'gap', 'range', 'vix', 'vix_ret', 'spy_ret']
     X = df_feat[feature_cols]
