@@ -674,8 +674,8 @@ with col_side:
                         bench_plot = None
                         bench_series_aligned = None
                         if bench_series is not None and len(bench_series) > 0:
-                            bench_series_aligned = bench_series.reindex(portfolio_hist.index).ffill()
-                            if bench_series_aligned.notna().sum() == 0:
+                            bench_series_aligned = pd.Series(bench_series).reindex(portfolio_hist.index).ffill()
+                            if bench_series_aligned.dropna().empty:
                                 bench_series_aligned = None
 
                         base_port = portfolio_hist.iloc[0] if portfolio_hist.iloc[0] != 0 else 1
