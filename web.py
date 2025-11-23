@@ -288,6 +288,19 @@ def compute_short_term_signal(df):
     volume = df['Volume'] if 'Volume' in df else pd.Series(dtype=float)
     price = close.iloc[-1]
 
+    # RSI(14) 계산
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(span=14, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(span=14, adjust=False).mean()
+    rs = gain / loss.replace(0, pd.NA)
+    rsi = (100 - (100 / (1 + rs))).iloc[-1]
+
+    # 볼린저 밴드 하단 터치 여부
+    sma20 = close.rolling(20).mean()
+    std20 = close.rolling(20).std()
+    bb_lower = (sma20 - 2 * std20).iloc[-1] if len(sma20.dropna()) > 0 else None
+    hit_bb_lower = bb_lower is not None and price <= bb_lower
+
     mom_5 = _pct_from_n(close, 5)
     mom_15 = _pct_from_n(close, 15)
     mom_30 = _pct_from_n(close, 30)
@@ -311,16 +324,22 @@ def compute_short_term_signal(df):
     score = 0.0
     weight = 0.0
     for val, scale, w in [
-        (mom_5, 0.4, 0.35),
-        (mom_15, 0.8, 0.3),
+        (mom_5, 0.4, 0.3),
+        (mom_15, 0.8, 0.25),
         (mom_30, 1.2, 0.15),
         ((vol_ratio - 1) * 100 if vol_ratio else None, 20, 0.1),
         ((price - vwap) / vwap * 100 if vwap else None, 0.5, 0.1),
+        ((1 - (rsi / 100)) * 100 if rsi is not None and not np.isnan(rsi) else None, 50, 0.08),  # 역추세: RSI 낮을수록 가점
     ]:
         if val is None or np.isnan(val):
             continue
         score += _clamp(val / scale) * w
         weight += w
+
+    # 볼린저 하단 밴드 터치 시 추가 가점
+    if hit_bb_lower:
+        score += 0.1
+        weight += 0.1
 
     prob_up = (score / weight + 1) / 2 if weight > 0 else 0.5
     target_pct = max(0.15, (vol_30 or 0.3) * 1.2)
@@ -340,6 +359,9 @@ def compute_short_term_signal(df):
         "stop_pct": stop_pct,
         "recent_high": high.tail(50).max(),
         "recent_low": low.tail(50).min(),
+        "rsi": rsi,
+        "bb_lower": bb_lower,
+        "hit_bb_lower": hit_bb_lower,
     }
 
 # S&P500 주요 티커 (상위 시총 중심)
@@ -436,6 +458,30 @@ def optimize_params(df, fixed_b, fixed_d, target_w):
                 if ret > best_ret: best_ret = ret; best_params = (m, a_val, c_val)
     st.session_state['mode'] = best_params[0]; st.session_state['up_a'] = best_params[1]; st.session_state['down_c'] = best_params[2]
     st.toast(f"✅ 최적 전략: {best_params[0]} / +{best_params[1]}% / -{best_params[2]}%")
+
+def walk_forward_analysis(df, initial_cash, train_days=252, test_days=63):
+    df = df.sort_index()
+    results = []
+    start = 0
+    while True:
+        train_end = start + train_days
+        test_end = train_end + test_days
+        if test_end > len(df):
+            break
+        train_df = df.iloc[start:train_end].copy()
+        test_df = df.iloc[train_end:test_end].copy()
+        if len(train_df) < train_days * 0.5 or len(test_df) < test_days * 0.5:
+            break
+        _, _, ret_train, _ = run_backtest(train_df.copy(), initial_cash, st.session_state['mode'], st.session_state['target_w'], st.session_state['up_a'], st.session_state['sell_b'], st.session_state['down_c'], st.session_state['buy_d'])
+        _, _, ret_test, _ = run_backtest(test_df.copy(), initial_cash, st.session_state['mode'], st.session_state['target_w'], st.session_state['up_a'], st.session_state['sell_b'], st.session_state['down_c'], st.session_state['buy_d'])
+        results.append({
+            "훈련기간": f"{train_df.index[0].date()} ~ {train_df.index[-1].date()}",
+            "검증기간": f"{test_df.index[0].date()} ~ {test_df.index[-1].date()}",
+            "훈련수익률(%)": round(ret_train, 2),
+            "검증수익률(%)": round(ret_test, 2)
+        })
+        start += test_days
+    return pd.DataFrame(results)
 
 # ---------------------------------------------------------
 # 3. UI 레이아웃
@@ -714,7 +760,25 @@ with col_main:
                     f_b.update_layout(margin=dict(t=30, b=0, l=0, r=0), legend=dict(orientation="h", y=1.02, x=1, xanchor="right"))
                     st.plotly_chart(f_b, use_container_width=True)
                     with st.expander("기록"): st.dataframe(pd.DataFrame(logs_sim), use_container_width=True)
-        
+
+                    with st.expander("전진 분석 (Walk-forward)"):
+                        wf_col1, wf_col2, wf_col3 = st.columns([1,1,1])
+                        train_days = wf_col1.slider("훈련 기간(일)", 60, 400, 252, step=30)
+                        test_days = wf_col2.slider("검증 기간(일)", 20, 180, 63, step=7)
+                        initial_cash = wf_col3.number_input("초기자본", value=10000, step=1000)
+                        if st.button("전진 분석 실행"):
+                            if len(hist_back) < train_days + test_days:
+                                st.warning("데이터가 부족합니다. 기간을 줄이세요.")
+                            else:
+                                with st.spinner("전진 분석 중..."):
+                                    wf_df = walk_forward_analysis(hist_back.copy(), initial_cash, train_days=train_days, test_days=test_days)
+                                if wf_df.empty:
+                                    st.warning("분석할 윈도우가 없습니다. 기간을 조정하세요.")
+                                else:
+                                    st.dataframe(wf_df, use_container_width=True)
+                                    st.metric("평균 훈련 수익률", f"{wf_df['훈련수익률(%)'].mean():.2f}%")
+                                    st.metric("평균 검증 수익률", f"{wf_df['검증수익률(%)'].mean():.2f}%")
+
         with tab2:
             min_len = 60
             if len(hist_chart) >= min_len:
