@@ -879,7 +879,7 @@ with col_main:
                 if 'mode' not in st.session_state:
                     st.session_state.update({
                         'mode':'VALUE','target_w':50,'up_a':10.0,'sell_b':50,'down_c':10.0,'buy_d':50,
-                        'base_mode':'TOTAL','use_ai_filter': False,'ai_threshold':0.6,'ai_period':'6mo','ai_interval':'1d'
+                        'base_mode':'TOTAL','use_ai_filter': False,'ai_threshold':0.6,'ai_threshold_pct':60.0,'ai_period':'6mo','ai_interval':'1d'
                     })
                 with st.container(border=True):
                     st.radio("매매 비율 기준", ['TOTAL','STOCK'], key='base_mode', format_func=lambda x: "현금+주식" if x=="TOTAL" else "주식 평가액")
@@ -892,7 +892,9 @@ with col_main:
                     st.slider("매수 비율(%)", 10, 100, key='buy_d', step=10)
                     st.markdown("**AI 필터**")
                     st.checkbox("AI 상승확률 필터 사용", key='use_ai_filter')
-                    st.slider("AI 임계값(%)", 50.0, 80.0, key='ai_threshold', value=60.0, step=1.0)
+                    if 'ai_threshold_pct' not in st.session_state: st.session_state['ai_threshold_pct'] = 60.0
+                    st.session_state['ai_threshold_pct'] = st.slider("AI 임계값(%)", 50.0, 80.0, key='ai_threshold_pct', value=st.session_state.get('ai_threshold_pct', 60.0), step=1.0)
+                    st.session_state['ai_threshold'] = st.session_state['ai_threshold_pct'] / 100.0
                     st.selectbox("AI 학습 기간", ["3mo","6mo","1y"], key='ai_period')
                     st.selectbox("AI 데이터 인터벌", ["1d","1h"], key='ai_interval')
                 st.button("✨ 최적 파라미터", on_click=optimize_params, args=(hist_back, st.session_state['sell_b'], st.session_state['buy_d'], st.session_state['target_w']))
