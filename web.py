@@ -832,8 +832,15 @@ with col_main:
             st.markdown("### S&P500 단기 신호 랭킹")
             col_a, col_b, col_c = st.columns([1,1,1])
             limit = col_a.slider("검사 종목 수", min_value=10, max_value=len(SP500_TICKERS), value=30, step=10)
-            period_choice = col_b.selectbox("기간", ["1mo", "3mo", "6mo"], index=0)
-            interval_choice = col_c.selectbox("인터벌", ["1d", "1h"], index=0, help="1h는 데이터 제공이 제한될 수 있습니다.")
+            interval_choice = col_c.selectbox("인터벌", ["1d", "1h", "5m"], index=0, help="5m는 1개월 이내, 1h는 3개월 이내 데이터만 지원됩니다.")
+
+            period_map = {
+                "1d": ["1mo", "3mo", "6mo", "1y"],
+                "1h": ["5d", "1mo", "3mo"],
+                "5m": ["5d", "1mo"],
+            }
+            period_options = period_map.get(interval_choice, ["1mo"])
+            period_choice = col_b.selectbox("기간", period_options, index=0)
 
             if st.button("상승 확률 상위 종목 보기", type="primary"):
                 with st.spinner("신호 계산 중..."):
