@@ -332,15 +332,15 @@ def add_technical_features(df, period="6mo", interval="1d"):
     df = df.dropna()
     return df
 
-def train_prediction_model(df, period="6mo", interval="1d", horizon=5, neutral_band=0.01):
+def train_prediction_model(df, period="6mo", interval="1d", horizon=5, neutral_band=0.01, min_rows=120):
     try:
         from sklearn.ensemble import RandomForestClassifier
     except ImportError as e:
         return None, None, None, None, "scikit-learn 미설치"
 
     df_feat = add_technical_features(df, period=period, interval=interval)
-    if len(df_feat) < 200:
-        return None, None, None, None, "데이터가 부족합니다 (200행 이상 필요)"
+    if len(df_feat) < min_rows:
+        return None, None, None, None, f"데이터가 부족합니다 ({min_rows}행 이상 필요)"
 
     future_ret = df_feat['Close'].shift(-horizon) / df_feat['Close'] - 1
     df_feat['Target'] = np.where(future_ret < -neutral_band, 0, np.where(future_ret > neutral_band, 2, 1))
@@ -395,8 +395,8 @@ def get_cached_model(ticker, period, interval):
     except Exception as e:
         return None, None, None, None, str(e)
 
-def compute_ai_signals(df, period="6mo", interval="1d", horizon=5, neutral_band=0.01):
-    prob_up, importances, model, feature_cols, metrics = train_prediction_model(df, period=period, interval=interval, horizon=horizon, neutral_band=neutral_band)
+def compute_ai_signals(df, period="6mo", interval="1d", horizon=5, neutral_band=0.01, min_rows=120):
+    prob_up, importances, model, feature_cols, metrics = train_prediction_model(df, period=period, interval=interval, horizon=horizon, neutral_band=neutral_band, min_rows=min_rows)
     if model is None:
         return None, None, importances  # importances carries err string if failed
     df_feat = add_technical_features(df, period=period, interval=interval)
@@ -978,7 +978,7 @@ with col_main:
                     ai_metrics = {}
                     ai_err = None
                     if st.session_state.get('ai_mode','OFF') != "OFF":
-                        prob_series, ai_metrics, ai_err = compute_ai_signals(hist_back.copy(), period=st.session_state.get('ai_period','6mo'), interval=st.session_state.get('ai_interval','1d'), horizon=5, neutral_band=0.01)
+                        prob_series, ai_metrics, ai_err = compute_ai_signals(hist_back.copy(), period=st.session_state.get('ai_period','6mo'), interval=st.session_state.get('ai_interval','1d'), horizon=5, neutral_band=0.01, min_rows=120)
                         if prob_series is not None:
                             ai_probs = prob_series.to_dict()
                         elif ai_err:
