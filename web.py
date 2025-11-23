@@ -514,7 +514,8 @@ with col_side:
                             drift = weight - target_eq
                             diff_val = (target_eq/100 * total_port) - val_now
                             sug_shares = diff_val / price_now if price_now else 0
-                            action = "줄이기" if drift > 2 else "늘리기" if drift < -2 else "유지"
+                            # 비중이 목표보다 높으면 매도, 낮으면 매수, 근접하면 유지
+                            action = "매도" if drift > 2 else "매수" if drift < -2 else "유지"
                             guide_rows.append({
                                 "종목": t,
                                 "현재가": price_now,
@@ -523,10 +524,10 @@ with col_side:
                                 "목표=균등(%)": round(target_eq, 2),
                                 "괴리(%)": round(drift, 2),
                                 "제안 수량": round(sug_shares, 4),
-                                "액션": action,
+                                "가이드": action,
                             })
                         if guide_rows:
-                            st.markdown("#### 리밸런싱 가이드 (균등 비중 기준)")
+                            st.markdown("#### 매매 가이드 (균등 비중 기준)")
                             st.dataframe(pd.DataFrame(guide_rows), use_container_width=True)
 
     st.divider()
