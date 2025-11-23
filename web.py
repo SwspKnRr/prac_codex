@@ -337,7 +337,6 @@ def add_technical_features(df, period="6mo", interval="1d"):
 def train_prediction_model(df, period="6mo", interval="1d", horizon=5, neutral_band=0.01, min_rows=120):
     try:
         from sklearn.ensemble import RandomForestClassifier
-        from sklearn.calibration import CalibratedClassifierCV
     except ImportError as e:
         return None, None, None, None, "scikit-learn 미설치"
 
@@ -367,8 +366,7 @@ def train_prediction_model(df, period="6mo", interval="1d", horizon=5, neutral_b
     if cut2 > 0 and cut2 < n:
         splits.append((slice(0, cut2), slice(cut2, n)))
 
-    base_model = RandomForestClassifier(n_estimators=180, min_samples_split=6, max_depth=10, random_state=42, class_weight='balanced', n_jobs=-1)
-    model = base_model
+    model = RandomForestClassifier(n_estimators=150, min_samples_split=8, max_depth=8, random_state=42, class_weight='balanced', n_jobs=-1)
     metrics = {"val_acc": [], "val_auc": [], "val_brier": []}
     for tr, va in splits:
         Xtr, Xva = X.iloc[tr], X.iloc[va]
@@ -387,7 +385,6 @@ def train_prediction_model(df, period="6mo", interval="1d", horizon=5, neutral_b
         metrics["val_brier"].append(brier_score_loss(y_up, pred_up))
 
     # 최종 학습 전체 데이터
-    model = CalibratedClassifierCV(base_model, method='sigmoid', cv=3)
     model.fit(X, y)
     proba_last = model.predict_proba(last_row_features[feature_cols])[0]
     prob_up = proba_last[2]
@@ -977,10 +974,10 @@ with col_main:
                     if 'ai_threshold_pct' not in st.session_state: st.session_state['ai_threshold_pct'] = 60.0
                     ai_pct_val = st.slider("AI 임계값(%)", 50.0, 80.0, key='ai_threshold_pct', value=st.session_state.get('ai_threshold_pct', 60.0), step=1.0)
                     st.session_state['ai_threshold'] = ai_pct_val / 100.0
-                    st.selectbox("AI 학습 기간", ["3mo","6mo","1y","2y"], key='ai_period')
+                    st.selectbox("AI 학습 기간", ["3mo","6mo","1y"], key='ai_period')
                     st.selectbox("AI 데이터 인터벌", ["1d","1h"], key='ai_interval')
-                    st.slider("AI horizon(캔들)", 1, 10, key='ai_horizon', value=5)
-                    st.slider("중립 밴드(%)", 0.0, 1.0, key='ai_neutral_pct', value=1.0, step=0.1)
+                    st.session_state['ai_horizon'] = 5
+                    st.session_state['ai_neutral_pct'] = 1.0
                 st.button("✨ 최적 파라미터", on_click=optimize_params, args=(hist_back, st.session_state['sell_b'], st.session_state['buy_d'], st.session_state['target_w'], st.session_state.get('ai_mode','OFF'), st.session_state.get('ai_threshold',0.6)))
             with cr:
                 if len(hist_back) > 0:
@@ -992,8 +989,8 @@ with col_main:
                             hist_back.copy(),
                             period=st.session_state.get('ai_period','6mo'),
                             interval=st.session_state.get('ai_interval','1d'),
-                            horizon=st.session_state.get('ai_horizon',5),
-                            neutral_band=st.session_state.get('ai_neutral_pct',1.0)/100.0,
+                            horizon=5,
+                            neutral_band=0.01,
                             min_rows=120
                         )
                         if prob_series is not None:
@@ -1168,10 +1165,10 @@ with col_main:
             st.markdown("### 🤖 AI 예측 모델 (Random Forest)")
             if len(hist_chart) >= 60:
                 ai_col1, ai_col2 = st.columns([1,1])
-                ai_period = ai_col1.selectbox("AI 학습 기간", ["3mo","6mo","1y","2y"], key="ai_period_live", index=1)
+                ai_period = ai_col1.selectbox("AI 학습 기간", ["3mo","6mo","1y"], key="ai_period_live", index=1)
                 ai_interval = ai_col2.selectbox("AI 인터벌", ["1d","1h"], key="ai_interval_live", index=0)
-                ai_horizon = st.slider("AI horizon(캔들)", 1, 10, key="ai_horizon_live", value=st.session_state.get('ai_horizon',5))
-                ai_neutral_pct = st.slider("중립 밴드(%)", 0.0, 1.0, key="ai_neutral_live", value=st.session_state.get('ai_neutral_pct',1.0), step=0.1)
+                ai_horizon = 5
+                ai_neutral_pct = 1.0
 
                 if st.button("AI 예측 실행"):
                     with st.spinner("AI 학습/예측 중..."):
