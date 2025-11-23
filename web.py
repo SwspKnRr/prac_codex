@@ -646,18 +646,24 @@ with col_side:
                 if data.empty:
                     st.warning("가격 데이터를 불러오지 못했습니다.")
                 else:
-                    portfolio_hist = pd.Series(current_cash, index=data.index)
+                    port_index = data.index
+                    if hasattr(port_index, "tz"): port_index = port_index.tz_localize(None)
+                    portfolio_hist = pd.Series(current_cash, index=port_index)
                     latest_prices = {}
                     for _, row in my_stocks.iterrows():
                         t = row['ticker']
                         if t in data.columns:
-                            portfolio_hist += data[t] * row['shares']
-                            latest_prices[t] = data[t].iloc[-1]
+                            series_t = data[t]
+                            if hasattr(series_t.index, "tz"): series_t = series_t.tz_localize(None)
+                            series_t = series_t.reindex(portfolio_hist.index).ffill()
+                            portfolio_hist += series_t * row['shares']
+                            latest_prices[t] = series_t.iloc[-1]
 
                     bench_series = None
                     if bench_ticker != "없음":
                         try:
                             bench_data = yf.download(bench_ticker, period=sim_period)['Close']
+                            if hasattr(bench_data.index, "tz"): bench_data = bench_data.tz_localize(None)
                             bench_series = bench_data.dropna()
                         except Exception:
                             bench_series = None
@@ -706,7 +712,7 @@ with col_side:
 
                         fig_total = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
                         fig_total.add_trace(go.Scatter(x=plot_series.index, y=plot_series, fill='tozeroy', line=dict(color='#8b5cf6', width=2), name=y_label), row=1, col=1)
-                        if bench_series is not None and len(bench_series) > 0:
+                        if bench_plot is not None:
                             fig_total.add_trace(go.Scatter(x=bench_plot.index, y=bench_plot, line=dict(color='#f59e0b', width=2), name=f"{bench_ticker}"), row=1, col=1)
                         fig_total.add_trace(go.Scatter(x=drawdown.index, y=drawdown, fill='tozeroy', line=dict(color='#ef4444'), name='드로우다운(%)'), row=2, col=1)
                         fig_total.update_layout(margin=dict(t=20, b=10, l=10, r=10), height=480, showlegend=True, legend=dict(orientation="h", y=1.08))
