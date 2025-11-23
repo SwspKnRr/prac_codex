@@ -2,6 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import sqlite3
 import math
 from datetime import datetime, timedelta
@@ -207,11 +208,16 @@ def sell_stock(ticker, sell_shares, sell_price):
 def overwrite_stock(ticker, shares, price):
     conn = get_db_connection()
     c = conn.cursor()
+    # ????? ??? ??? ?? ??? ?? ?? ??? ??
+    cash_before = get_current_cash(conn)
     c.execute("SELECT sort_order FROM holdings WHERE ticker=?", (ticker,))
     row = c.fetchone(); order = row[0] if row else 99
     c.execute("INSERT OR REPLACE INTO holdings VALUES (?, ?, ?, ?)", (ticker, shares, price, order))
+    if cash_before is not None:
+        c.execute("INSERT OR REPLACE INTO cash VALUES (?, ?)", ('USD', cash_before))
     conn.commit(); conn.close()
-    add_log(ticker, "정보 수정", shares, price, "현금 변동 없음 (단순수정)", 0.0)
+    add_log(ticker, "?? ??", shares, price, "?? ?? ?? (????)", 0.0)
+    st.toast(f"? ?? ??: {ticker}")
     st.toast(f"✏️ 수정 완료: {ticker}")
 
 def delete_stock(ticker):
@@ -448,20 +454,80 @@ with col_side:
     st.metric(label="총 자산 (USD)", value=f"${total_value:,.2f}", delta=f"${daily_pnl_sum:,.2f} (오늘)")
     st.caption(f"📊 주식 ${total_stock_val:,.2f} + 💵 현금 ${current_cash:,.2f}")
     
+    sim_col1, sim_col2 = st.columns([1, 1])
+    sim_period = sim_col1.selectbox("시뮬레이션 기간", ["6mo", "1y", "2y", "5y"], index=1)
+    show_norm = sim_col2.checkbox("정규화(=100 기준)", value=False)
+
     if st.button("📈 자산 추이 (Simulation)", use_container_width=True):
         if not my_stocks.empty:
             with st.spinner("계산 중..."):
                 tickers = my_stocks['ticker'].tolist()
-                data = yf.download(tickers, period="1y")['Close']
-                if isinstance(data, pd.Series): data = data.to_frame(name=tickers[0])
-                portfolio_hist = pd.Series(current_cash, index=data.index)
-                for index, row in my_stocks.iterrows():
-                    if row['ticker'] in data.columns: portfolio_hist += data[row['ticker']] * row['shares']
-                with st.expander("가치 변화 (1년)", expanded=True):
-                    fig_total = go.Figure()
-                    fig_total.add_trace(go.Scatter(x=portfolio_hist.index, y=portfolio_hist, fill='tozeroy', line=dict(color='#8b5cf6')))
-                    fig_total.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=300)
-                    st.plotly_chart(fig_total, use_container_width=True)
+                data = yf.download(tickers, period=sim_period)['Close']
+                if isinstance(data, pd.Series):
+                    data = data.to_frame(name=tickers[0])
+                data = data.dropna(axis=0, how='all')
+                if data.empty:
+                    st.warning("가격 데이터를 불러오지 못했습니다.")
+                else:
+                    portfolio_hist = pd.Series(current_cash, index=data.index)
+                    latest_prices = {}
+                    for _, row in my_stocks.iterrows():
+                        t = row['ticker']
+                        if t in data.columns:
+                            portfolio_hist += data[t] * row['shares']
+                            latest_prices[t] = data[t].iloc[-1]
+
+                    if len(portfolio_hist) == 0:
+                        st.warning("계산할 자산 곡선이 없습니다.")
+                    else:
+                        if show_norm:
+                            base = portfolio_hist.iloc[0] if portfolio_hist.iloc[0] != 0 else 1
+                            plot_series = portfolio_hist / base * 100
+                            y_label = "지수화(=100)"
+                        else:
+                            plot_series = portfolio_hist
+                            y_label = "총 자산 (USD)"
+
+                        roll_max = portfolio_hist.cummax()
+                        drawdown = (portfolio_hist / roll_max - 1) * 100
+
+                        fig_total = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+                        fig_total.add_trace(go.Scatter(x=plot_series.index, y=plot_series, fill='tozeroy', line=dict(color='#8b5cf6', width=2), name=y_label), row=1, col=1)
+                        fig_total.add_trace(go.Scatter(x=drawdown.index, y=drawdown, fill='tozeroy', line=dict(color='#ef4444'), name='드로우다운(%)'), row=2, col=1)
+                        fig_total.update_layout(margin=dict(t=20, b=10, l=10, r=10), height=480, showlegend=False)
+                        fig_total.update_yaxes(title_text=y_label, row=1, col=1)
+                        fig_total.update_yaxes(title_text="드로우다운(%)", row=2, col=1)
+                        st.plotly_chart(fig_total, use_container_width=True)
+
+                    if latest_prices:
+                        total_port = portfolio_hist.iloc[-1]
+                        n = len(latest_prices)
+                        target_eq = 100 / n if n > 0 else 0
+                        guide_rows = []
+                        for _, row in my_stocks.iterrows():
+                            t = row['ticker']
+                            if t not in latest_prices:
+                                continue
+                            price_now = latest_prices[t]
+                            val_now = price_now * row['shares']
+                            weight = val_now / total_port * 100 if total_port else 0
+                            drift = weight - target_eq
+                            diff_val = (target_eq/100 * total_port) - val_now
+                            sug_shares = diff_val / price_now if price_now else 0
+                            action = "줄이기" if drift > 2 else "늘리기" if drift < -2 else "유지"
+                            guide_rows.append({
+                                "종목": t,
+                                "현재가": price_now,
+                                "보유가치": val_now,
+                                "비중(%)": round(weight, 2),
+                                "목표=균등(%)": round(target_eq, 2),
+                                "괴리(%)": round(drift, 2),
+                                "제안 수량": round(sug_shares, 4),
+                                "액션": action,
+                            })
+                        if guide_rows:
+                            st.markdown("#### 리밸런싱 가이드 (균등 비중 기준)")
+                            st.dataframe(pd.DataFrame(guide_rows), use_container_width=True)
 
     st.divider()
     
